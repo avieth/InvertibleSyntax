@@ -405,7 +405,9 @@ optional invs = case invs of
 -- Parse: take at least one or both, but fail if neither.
 -- Study the output type: it's either both or one of them.
 tryTwo
-    :: ( _ )
+    :: ( Monoid stream
+       , P.Stream stream m t
+       )
     => InvertibleSyntax stream m s t
     -> InvertibleSyntax stream m s u
     -> InvertibleSyntax stream m s (Either (t, u) (Either t u))
@@ -429,3 +431,23 @@ tryTwo left right = case (left, right) of
                            Left (l, r) -> Left (outLeft l, outRight r)
                            Right (Left l) -> Right (Left (outLeft l))
                            Right (Right r) -> Right (Right (outRight r))
+
+unsignedDecimal
+    :: ( Monad m
+       , Monoid stream
+       , P.Stream stream m Char
+       , Dump stream Char
+       )
+    => InvertibleSyntax stream m Integer Integer
+unsignedDecimal = dimap deconstruct reconstruct (many1 (oneOf digits))
+  where
+    -- We know that show Integer is not the empty list, ever... unfortunately,
+    -- the types don't capture that.
+    deconstruct :: Integer -> (Char, [Char])
+    deconstruct number = case show number of
+        x : xs -> (x, xs)
+    reconstruct :: (Char, [Char]) -> Integer
+    reconstruct (first, rest) = foldr expAndAdd 0 (zip (reverse (first : rest)) [0..])
+    expAndAdd :: (Char, Int) -> Integer -> Integer
+    expAndAdd (m, p) n = (fromIntegral (fromEnum m :: Int) - 48) * (10 ^ p) + n
+    digits = ['0'..'9']
