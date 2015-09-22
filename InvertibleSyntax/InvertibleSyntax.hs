@@ -250,6 +250,32 @@ anyString
     => InvertibleSyntax stream m String String
 anyString = many anyChar
 
+anyQuotedString
+    :: ( P.Stream stream m Char
+       , Dump stream [Char]
+       , Monoid stream
+       , Monad m
+       )
+    => InvertibleSyntax stream m String String
+anyQuotedString = InvertibleSyntax id printer id parser id
+  where
+    printer str = dump (concat ["\"", escaped, "\""])
+      where escaped = do x <- str
+                         if x == '\"'
+                         then "\\\""
+                         else return x
+    parser = do P.char '\"'
+                s <- middle
+                P.char '\"'
+                return s
+    middle = P.many ((P.try escaped) P.<|> (P.try notEscaped))
+    escaped = do c <- P.char '\\'
+                 P.char '\"'
+    notEscaped = do c <- P.anyChar
+                    if c == '\"'
+                    then mzero
+                    else return c
+
 -- Indicate that this printer should be used for printing, but its parser is
 -- optional. Example use case: optional semicolon at the end of a line, which
 -- should be placed when printed but is not necessary when parsed.
