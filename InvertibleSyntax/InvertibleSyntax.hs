@@ -25,6 +25,7 @@ module InvertibleSyntax.InvertibleSyntax where
 
 import Prelude hiding (id, (.))
 import Control.Category
+import Control.Applicative hiding (many)
 import Control.Arrow
 import Control.Monad
 import Control.Monad.Trans.Maybe
@@ -39,7 +40,7 @@ import qualified Text.Parsec as P
 -- | @InvertibleSyntax stream m s t@ means that we have, essentially:
 --
 --     @
---       print :: s -> stream
+--       print :: s -> Maybe stream
 --       parse :: stream -> Maybe t
 --       thru :: s -> t
 --     @
@@ -47,7 +48,7 @@ import qualified Text.Parsec as P
 --   and if we've done anything right, it should be the case that:
 --
 --     @
---       parse . print = Just . thru
+--       parse <=< print = Just . thru
 --     @
 --
 --   That's to say, you have a compatible printer and parser, as well as
@@ -72,21 +73,27 @@ import qualified Text.Parsec as P
 --
 --     @
 --       thru = id
---       parse . print = Just
+--       parse <=< print = Just
 --     @
 --
 --   This case inspires the name @InvertibleSyntax@, as it gives a parser and
 --   printer for the same datatype, like a DSL for example.
+--
+--   Note that the printer is partial: not every input type will actually print!
+--   That's because there are some cases in which a parser for some type @t@
+--   cannot parse every member of @t@! Take an alphanumeric string for example.
+--   If we need the left-inverse property of parse to print, then we just
+--   cannot print the string "#" because this will never parse.
 data InvertibleSyntax stream m input output where
     InvertibleSyntax
         :: (input -> symbolic)
-        -> (symbolic -> stream)           -- The printer.
+        -> (symbolic -> Maybe stream)     -- The printer.
         -> (symbolic -> parsed)           -- Coherence.
         -> (P.ParsecT stream () m parsed) -- The parser.
         -> (parsed -> output)
         -> InvertibleSyntax stream m input output
 
-printer :: InvertibleSyntax stream m input output -> (input -> stream)
+printer :: InvertibleSyntax stream m input output -> (input -> Maybe stream)
 printer term = case term of
     InvertibleSyntax inp printer _ _ _ -> getOp (contramap inp (Op printer))
 
@@ -106,9 +113,12 @@ instance Profunctor (InvertibleSyntax stream m) where
 instance Functor (InvertibleSyntax stream m s) where
     fmap = rmap
 
+-- TODO formal proof that
+--   1. pure x has left-inverse property
+--   2. if x and y have left-inverse property, then so does x <*> y.
 instance Monoid stream => Applicative (InvertibleSyntax stream m s) where
     -- Makes sense: u ~ t and we print nothing, consume no input.
-    pure x = InvertibleSyntax (const x) (const mempty) id (pure x) (const x)
+    pure x = InvertibleSyntax (const x) (const (Just mempty)) id (pure x) (const x)
     -- What will the hidden @u@ become here? We have @s@ and @t@ fixed.
     -- Aha, yes; we must pair up both peculiar @u@s, which may be different
     -- for mf and mx, and do the application in the out function.
@@ -119,7 +129,7 @@ instance Monoid stream => Applicative (InvertibleSyntax stream m s) where
             -- The next printer just sequences the two printers. Unlike the parser,
             -- it is *not* concerned with the function @f@ nor the point @x@; the
             -- point @u@ determines everything.
-            print = \(uf, ux) -> printf uf <> printx ux
+            print = \(uf, ux) -> (<>) <$> printf uf <*> printx ux
             -- For the parser... well that's easy, since Parsec has already
             -- defined the applicative.
             -- It's compatible with the above: consume what mf would print, then
@@ -128,6 +138,20 @@ instance Monoid stream => Applicative (InvertibleSyntax stream m s) where
             -- part of the formal profunctor) can handle the application.
             parse = (,) <$> parsef <*> parsex
             liaison = \(f, x) -> (liaisonf f, liaisonx x)
+
+{-
+instance Monoid stream => Alternative (InvertibleSyntax stream m s) where
+    -- For empty we need s and t to be free, but somehow must construct a
+    -- function s -> t.
+    -- We simply cannot give a safe value for the liaison, so we choose
+    -- undefined. Can we guarantee that the liaison for empty will never be
+    -- used? No! We can monadic bind empty on the left, and the liaison will
+    -- be forced.
+    -- Perhaps the liaison shall be optional, so we could give Nothing
+    -- here? No liaison means the parser and printer always fail...
+    empty = InvertibleSyntax id (const Nothing) undefined empty id
+    (<|>) = undefined
+-}
 
 -- We shall need this in our implementation of (>>=).
 -- For bind, the internal type @u@ cannot become, like for applicative, a pair
@@ -138,6 +162,10 @@ instance Monoid stream => Applicative (InvertibleSyntax stream m s) where
 data IntermediateBind stream t where
     IntermediateBind :: u -> (u -> t) -> IntermediateBind stream t
 
+-- TODO formal proof that
+--   1. return x has left-inverse property (see Applicative instance).
+--   2. if x has left-inverse property, and for all y, k y has left-inverse
+--      property, then so does x >>= k.
 instance Monoid stream => Monad (InvertibleSyntax stream m input) where
     return = pure
     x >>= k = case x of
@@ -159,7 +187,7 @@ instance Monoid stream => Monad (InvertibleSyntax stream m input) where
             -- To print, we just sequence the output as we would for
             -- applicative.
             print = \(s, i, invsk) -> case invsk of
-                InvertibleSyntax inpk printk liaisonk parsek outk -> printx s <> printk (inpk i)
+                InvertibleSyntax inpk printk liaisonk parsek outk -> (<>) <$> printx s <*> printk (inpk i)
 
             -- The parser is straightforward, as Parsec does most of the work
             -- for us.
@@ -186,7 +214,12 @@ instance Dump [Char] Char where
 instance Dump [Char] [Char] where
     dump = id
 
-many :: (Monad m, Monoid stream) => InvertibleSyntax stream m s t -> InvertibleSyntax stream m [s] [t]
+many
+    :: ( Monad m
+       , Monoid stream
+       )
+    => InvertibleSyntax stream m s t
+    -> InvertibleSyntax stream m [s] [t]
 many invs = case invs of
     InvertibleSyntax oldInp oldPrint oldLiaison oldParse oldOut -> InvertibleSyntax inp print liaison parse out
       where
@@ -196,8 +229,44 @@ many invs = case invs of
         inp = fmap oldInp
         out = fmap oldOut
         liaison = fmap oldLiaison
-        print = \xs -> mconcat (fmap oldPrint xs)
+        print = \xs -> mconcat <$> traverse oldPrint xs
         parse = P.many oldParse
+
+many1
+    :: ( Monad m
+       , Monoid stream
+       )
+    => InvertibleSyntax stream m s t
+    -> InvertibleSyntax stream m (s, [s]) (t, [t])
+many1 invs = (,) <$> (lmap fst invs) <*> (lmap snd (many invs))
+
+-- Note how the separator must have the same input type as the separated!
+-- I suspect this will not be a problem, since the separator is typically a
+-- fixed thing which doesn't depend on input: you can print it without giving
+-- any data.
+sepBy1
+    :: ( Monad m
+       , Monoid stream
+       )
+    => InvertibleSyntax stream m s t
+    -> InvertibleSyntax stream m s sept
+    -> InvertibleSyntax stream m (s, [s]) (t, [t])
+sepBy1 invsP invsSep = do x <- lmap fst invsP
+                          xs <- lmap snd (many (invsSep >> invsP))
+                          return (x, xs)
+
+{-
+sepBy
+    :: ( Monad m
+       , Monoid stream
+       )
+    => InvertibleSyntax stream m s t
+    -> InvertibleSyntax stream m s sept
+    -> InvertibleSyntax stream m [s] [t]
+sepBy invsP invsSep = bundle (sepBy1 invsP invsSep) <|> pure []
+  where
+    bundle = dimap (\(x, xs) -> x : xs) (\xs -> (take 1 xs, drop 1 xs))
+-}
 
 -- Choose the printer according to the input binary sum.
 -- Parser tries the left first and then the right in case it doesn't pass,
@@ -223,13 +292,40 @@ choice left right = case (left, right) of
         print = either id id . bimap printLeft printRight
         parse = (P.try (fmap Left parseLeft)) P.<|> (P.try (fmap Right parseRight))
 
+satisfy
+    :: ( P.Stream stream m Char
+       , Dump stream Char
+       )
+    => (Char -> Bool)
+    -> InvertibleSyntax stream m Char Char
+satisfy p = InvertibleSyntax id print id parse id
+  where
+    print = \c -> if p c then Just (dump c) else Nothing
+    parse = P.satisfy p
+
+oneOf
+    :: ( P.Stream stream m Char
+       , Dump stream Char
+       )
+    => [Char]
+    -> InvertibleSyntax stream m Char Char
+oneOf cs = satisfy (\c -> elem c cs)
+
+noneOf
+    :: ( P.Stream stream m Char
+       , Dump stream Char
+       )
+    => [Char]
+    -> InvertibleSyntax stream m Char Char
+noneOf cs = satisfy (\c -> not (elem c cs))
+
 -- symbolic type is Char; parsed type is Char.
 char :: (P.Stream stream m Char, Dump stream Char) => Char -> InvertibleSyntax stream m s Char
-char c = InvertibleSyntax (const c) dump id (P.char c) id
+char c = InvertibleSyntax (const c) (Just . dump) id (P.char c) id
 
 -- symbolic type is Char; parsed type is Char.
 anyChar :: (P.Stream stream m Char, Dump stream Char) => InvertibleSyntax stream m Char Char
-anyChar = InvertibleSyntax id dump id P.anyChar id
+anyChar = InvertibleSyntax id (Just . dump) id P.anyChar id
 
 -- symbolic type is String; parsed type is String.
 string
@@ -238,7 +334,7 @@ string
        )
     => String
     -> InvertibleSyntax stream m s String
-string str = InvertibleSyntax (const str) dump id (P.string str) id
+string str = InvertibleSyntax (const str) (Just . dump) id (P.string str) id
 
 -- symbolic type is String; parsed type is String.
 anyString
@@ -259,7 +355,7 @@ anyQuotedString
     => InvertibleSyntax stream m String String
 anyQuotedString = InvertibleSyntax id printer id parser id
   where
-    printer str = dump (concat ["\"", escaped, "\""])
+    printer str = Just (dump (concat ["\"", escaped, "\""]))
       where escaped = do x <- str
                          if x == '\"'
                          then "\\\""
@@ -307,7 +403,7 @@ optional invs = case invs of
         InvertibleSyntax newInp newPrinter newLiaison newParser (fmap oldOut)
           where
             newInp = const ()
-            newPrinter = const mempty
+            newPrinter = const (Just mempty)
             newLiaison = const Nothing
             newParser = P.optionMaybe oldParser
 
@@ -325,7 +421,7 @@ tryTwo left right = case (left, right) of
       ) -> InvertibleSyntax inp print liaison parse out
       where
         inp = \s -> (inpLeft s, inpRight s)
-        print = \(left, right) -> printLeft left <> printRight right
+        print = \(left, right) -> (<>) <$> printLeft left <*> printRight right
         liaison = \(left, right) -> (Left (liaisonLeft left, liaisonRight right))
         parse = do l <- P.optionMaybe parseLeft
                    r <- P.optionMaybe parseRight
