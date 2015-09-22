@@ -18,8 +18,8 @@ module Examples.Stack where
 import Data.Functor.Identity
 import Data.Profunctor
 import Control.Freedom.Construction
-import InvertibleSyntax.InvertibleSyntax
-import InvertibleSyntax.Freedom
+import Text.InvertibleSyntax
+import Text.InvertibleSyntax.Freedom
 
 type FStack = (Sequence (Push Pure + Pop + Add) Rec) + None
 type Stack = Fix FStack

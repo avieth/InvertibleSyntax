@@ -21,7 +21,7 @@ Portability : non-portable (GHC only)
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module InvertibleSyntax.InvertibleSyntax where
+module Text.InvertibleSyntax where
 
 import Prelude hiding (id, (.))
 import Control.Category
