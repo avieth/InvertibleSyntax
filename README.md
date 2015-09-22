@@ -31,7 +31,7 @@ particular `Char`, namely the one which is always printed.
 
 To combine two `InvertibleSyntax`s applicatively or monadically, we must fix the
 input types so that they all coincide. Terms with different input types can
-be brought it using `lmap`. Take this trivial example, which parses or prints
+be brought together using `lmap`. Take this trivial example, which parses or prints
 a pair of nonnegative integers:
 
 ```Haskell
